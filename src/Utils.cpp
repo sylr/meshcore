@@ -9,6 +9,7 @@
 namespace mesh {
 
 uint32_t RNG::nextInt(uint32_t _min, uint32_t _max) {
+  if (_max <= _min) return _min;   // avoid division-by-zero / unsigned underflow on (_max - _min)
   uint32_t num;
   random((uint8_t *) &num, sizeof(num));
   return (num % (_max - _min)) + _min;
@@ -74,6 +75,10 @@ int Utils::encryptThenMAC(const uint8_t* shared_secret, uint8_t* dest, const uin
 int Utils::MACThenDecrypt(const uint8_t* shared_secret, uint8_t* dest, const uint8_t* src, int src_len) {
   if (src_len <= CIPHER_MAC_SIZE) return 0;  // invalid src bytes
 
+  // decrypt() processes whole 16-byte blocks and rounds partial input UP, which would read
+  // past 'src' and write past 'dest' for a non-block-aligned ciphertext. Reject such packets.
+  if (((src_len - CIPHER_MAC_SIZE) % CIPHER_BLOCK_SIZE) != 0) return 0;
+
   uint8_t hmac[CIPHER_MAC_SIZE];
   {
     SHA256 sha;
@@ -81,7 +86,10 @@ int Utils::MACThenDecrypt(const uint8_t* shared_secret, uint8_t* dest, const uin
     sha.update(src + CIPHER_MAC_SIZE, src_len - CIPHER_MAC_SIZE);
     sha.finalizeHMAC(shared_secret, PUB_KEY_SIZE, hmac, CIPHER_MAC_SIZE);
   }
-  if (memcmp(hmac, src, CIPHER_MAC_SIZE) == 0) {
+  // constant-time compare: don't leak how many MAC bytes matched via early-exit timing
+  uint8_t diff = 0;
+  for (int k = 0; k < CIPHER_MAC_SIZE; k++) diff |= (uint8_t)(hmac[k] ^ src[k]);
+  if (diff == 0) {
     return decrypt(shared_secret, dest, src + CIPHER_MAC_SIZE, src_len - CIPHER_MAC_SIZE);
   }
   return 0; // invalid HMAC
@@ -127,6 +135,7 @@ bool Utils::fromHex(uint8_t* dest, int dest_size, const char *src_hex) {
   while (dp - dest < dest_size) {
     char ch = *src_hex++;
     char cl = *src_hex++;
+    if (!isHexChar(ch) || !isHexChar(cl)) return false;  // reject non-hex input instead of silently decoding to 0
     *dp++ = (hexVal(ch) << 4) | hexVal(cl);
   }
   return true;
