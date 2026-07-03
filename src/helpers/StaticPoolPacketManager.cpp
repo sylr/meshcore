@@ -57,6 +57,13 @@ mesh::Packet* PacketQueue::removeByIdx(int i) {
   return item;
 }
 
+bool PacketQueue::contains(mesh::Packet* packet) const {
+  for (int i = 0; i < _num; i++) {
+    if (_table[i] == packet) return true;
+  }
+  return false;
+}
+
 bool PacketQueue::add(mesh::Packet* packet, uint8_t priority, uint32_t scheduled_for) {
   if (_num == _size) {
     return false;
@@ -80,7 +87,14 @@ mesh::Packet* StaticPoolPacketManager::allocNew() {
 }
 
 void StaticPoolPacketManager::free(mesh::Packet* packet) {
-  unused.add(packet, 0, 0);
+  if (packet == NULL) return;
+  if (unused.contains(packet)) {   // double-free guard: adding twice would hand the same Packet to two owners (UAF)
+    MESH_DEBUG_PRINTLN("StaticPoolPacketManager::free: double-free detected, ignoring");
+    return;
+  }
+  if (!unused.add(packet, 0, 0)) {  // honor the return: dropping is safer than corrupting the free list
+    MESH_DEBUG_PRINTLN("StaticPoolPacketManager::free: pool full, packet dropped");
+  }
 }
 
 void StaticPoolPacketManager::queueOutbound(mesh::Packet* packet, uint8_t priority, uint32_t scheduled_for) {

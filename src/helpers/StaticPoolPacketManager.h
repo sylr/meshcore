@@ -16,6 +16,7 @@ public:
   int countBefore(uint32_t now) const;
   mesh::Packet* itemAt(int i) const { return _table[i]; }
   mesh::Packet* removeByIdx(int i);
+  bool contains(mesh::Packet* packet) const;
 };
 
 class StaticPoolPacketManager : public mesh::PacketManager {
