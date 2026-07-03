@@ -95,6 +95,7 @@ void ESPNowBridge::loop() {
 
 void ESPNowBridge::xorCrypt(uint8_t *data, size_t len) {
   size_t keyLen = strlen(_prefs->bridge_secret);
+  if (keyLen == 0) return;   // no key configured: avoid modulo-by-zero (would fault the MCU)
   for (size_t i = 0; i < len; i++) {
     data[i] ^= _prefs->bridge_secret[i % keyLen];
   }
@@ -168,8 +169,12 @@ void ESPNowBridge::sendPacket(mesh::Packet *packet) {
   }
 
   if (!_seen_packets.hasSeen(packet)) {
-    // Create a temporary buffer just for size calculation and reuse for actual writing
-    uint8_t sizingBuffer[MAX_PAYLOAD_SIZE];
+    // Create a temporary buffer just for size calculation and reuse for actual writing.
+    // Must be large enough for a full mesh packet: Packet::writeTo() takes no destination
+    // size and can emit up to MAX_TRANS_UNIT bytes, which exceeds MAX_PAYLOAD_SIZE. Sizing
+    // this to MAX_PAYLOAD_SIZE would let an oversized packet overflow the stack before the
+    // size check below runs.
+    uint8_t sizingBuffer[MAX_TRANS_UNIT + 1];
     uint16_t meshPacketLen = packet->writeTo(sizingBuffer);
 
     // Check if packet fits within our maximum payload size
