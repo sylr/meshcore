@@ -40,7 +40,7 @@ int Mesh::searchChannelsByHash(const uint8_t* hash, GroupChannel channels[], int
 
 DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
   if (pkt->isRouteDirect() && pkt->getPayloadType() == PAYLOAD_TYPE_TRACE) {
-    if (pkt->path_len < MAX_PATH_SIZE) {
+    if (pkt->path_len < MAX_PATH_SIZE && pkt->payload_len >= 9) {   // need at least the 9-byte TRACE header (tag+auth_code+flags)
       uint8_t i = 0;
       uint32_t trace_tag;
       memcpy(&trace_tag, &pkt->payload[i], 4); i += 4;
@@ -48,14 +48,16 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
       memcpy(&auth_code, &pkt->payload[i], 4); i += 4;
       uint8_t flags = pkt->payload[i++];
       uint8_t path_sz = flags & 0x03;  // NEW v1.11+: lower 2 bits is path hash size
+      uint8_t hash_sz = 1 << path_sz;
 
-      uint8_t len = pkt->payload_len - i;
+      uint8_t len = pkt->payload_len - i;   // safe: payload_len >= i (== 9) checked above
       // path_len*entry_size can exceed 255 (path_len up to 63, entry_size up to 8);
       // a uint8_t offset would wrap and steer the isHashMatch() read to the wrong place.
       uint16_t offset = (uint16_t)pkt->path_len << path_sz;
       if (offset >= len) {   // TRACE has reached end of given path
         onTraceRecv(pkt, trace_tag, auth_code, flags, pkt->path, &pkt->payload[i], len);
-      } else if (self_id.isHashMatch(&pkt->payload[i + offset], 1 << path_sz) && allowPacketForward(pkt) && !_tables->hasSeen(pkt)) {
+      } else if (offset + hash_sz <= len   // the FULL hash must fit within the payload (guards OOB read)
+                 && self_id.isHashMatch(&pkt->payload[i + offset], hash_sz) && allowPacketForward(pkt) && !_tables->hasSeen(pkt)) {
         // append SNR (Not hash!)
         pkt->path[pkt->path_len++] = (int8_t) (pkt->getSNR()*4);
 
