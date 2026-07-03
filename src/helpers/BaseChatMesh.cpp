@@ -473,15 +473,17 @@ int  BaseChatMesh::sendCommandData(const ContactInfo& recipient, uint32_t timest
 }
 
 bool BaseChatMesh::sendGroupMessage(uint32_t timestamp, mesh::GroupChannel& channel, const char* sender_name, const char* text, int text_len) {
+  if (text_len < 0) return false;  // guard: a negative length would promote to a huge size_t in memcpy below
   uint8_t temp[5+MAX_TEXT_LEN+32];
   memcpy(temp, &timestamp, 4);   // mostly an extra blob to help make packet_hash unique
   temp[4] = 0;  // TXT_TYPE_PLAIN
 
-  sprintf((char *) &temp[5], "%s: ", sender_name);  // <sender>: <msg>
+  snprintf((char *) &temp[5], MAX_TEXT_LEN, "%s: ", sender_name);  // <sender>: <msg> (bounded: sender_name may be long)
   char *ep = strchr((char *) &temp[5], 0);
   int prefix_len = ep - (char *) &temp[5];
 
   if (text_len + prefix_len > MAX_TEXT_LEN) text_len = MAX_TEXT_LEN - prefix_len;
+  if (text_len < 0) text_len = 0;  // prefix alone may reach MAX_TEXT_LEN -> keep memcpy length non-negative
   memcpy(ep, text, text_len);
   ep[text_len] = 0;  // null terminator
 
@@ -525,7 +527,7 @@ bool BaseChatMesh::sendGroupData(mesh::GroupChannel& channel, uint8_t* path, uin
 }
 
 bool BaseChatMesh::shareContactZeroHop(const ContactInfo& contact) {
-  int plen = getBlobByKey(contact.id.pub_key, PUB_KEY_SIZE, temp_buf);  // retrieve last raw advert packet
+  int plen = getBlobByKey(contact.id.pub_key, PUB_KEY_SIZE, temp_buf, sizeof(temp_buf));  // retrieve last raw advert packet
   if (plen == 0) return false;  // not found
 
   auto packet = obtainNewPacket();
@@ -538,8 +540,8 @@ bool BaseChatMesh::shareContactZeroHop(const ContactInfo& contact) {
   return true;  // success
 }
 
-uint8_t BaseChatMesh::exportContact(const ContactInfo& contact, uint8_t dest_buf[]) {
-  return getBlobByKey(contact.id.pub_key, PUB_KEY_SIZE, dest_buf);  // retrieve last raw advert packet
+uint8_t BaseChatMesh::exportContact(const ContactInfo& contact, uint8_t dest_buf[], size_t dest_size) {
+  return getBlobByKey(contact.id.pub_key, PUB_KEY_SIZE, dest_buf, dest_size);  // retrieve last raw advert packet
 }
 
 bool BaseChatMesh::importContact(const uint8_t src_buf[], uint8_t len) {

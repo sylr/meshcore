@@ -187,6 +187,10 @@ void MyMesh::writeContactRespFrame(uint8_t code, const ContactInfo &contact) {
 }
 
 void MyMesh::updateContactFromFrame(ContactInfo &contact, uint32_t& last_mod, const uint8_t *frame, int len) {
+  // mandatory layout: code(1) + pub_key(32) + type(1) + flags(1) + out_path_len(1) + out_path(64) + name(32) + timestamp(4)
+  const int MANDATORY_LEN = 1 + PUB_KEY_SIZE + 1 + 1 + 1 + MAX_PATH_SIZE + 32 + 4;
+  if (len < MANDATORY_LEN) return;  // truncated frame: don't read stale bytes into a persisted contact
+
   int i = 0;
   uint8_t code = frame[i++]; // eg. CMD_ADD_UPDATE_CONTACT
   memcpy(contact.id.pub_key, &frame[i], PUB_KEY_SIZE);
@@ -197,6 +201,7 @@ void MyMesh::updateContactFromFrame(ContactInfo &contact, uint32_t& last_mod, co
   memcpy(contact.out_path, &frame[i], MAX_PATH_SIZE);
   i += MAX_PATH_SIZE;
   memcpy(contact.name, &frame[i], 32);
+  contact.name[sizeof(contact.name) - 1] = 0;  // guarantee null termination
   i += 32;
   memcpy(&contact.last_advert_timestamp, &frame[i], 4);
   i += 4;
@@ -387,7 +392,12 @@ void MyMesh::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path
 }
 
 static int sort_by_recent(const void *a, const void *b) {
-  return ((AdvertPath *) b)->recv_timestamp - ((AdvertPath *) a)->recv_timestamp;
+  // most-recent first; explicit comparison avoids uint32_t subtraction wrapping when cast to int
+  uint32_t ta = ((AdvertPath *) a)->recv_timestamp;
+  uint32_t tb = ((AdvertPath *) b)->recv_timestamp;
+  if (tb > ta) return 1;
+  if (tb < ta) return -1;
+  return 0;
 }
 
 int MyMesh::getRecentlyHeard(AdvertPath dest[], int max_num) {
@@ -1114,7 +1124,7 @@ void MyMesh::handleCmdFrame(size_t len) {
                         ? ERR_CODE_NOT_FOUND
                         : ERR_CODE_UNSUPPORTED_CMD); // unknown recipient, or unsupported TXT_TYPE_*
     }
-  } else if (cmd_frame[0] == CMD_SEND_CHANNEL_TXT_MSG) { // send GroupChannel text msg
+  } else if (cmd_frame[0] == CMD_SEND_CHANNEL_TXT_MSG && len >= 7) { // send GroupChannel text msg (header+txt_type+channel_idx+timestamp = 7)
     int i = 1;
     uint8_t txt_type = cmd_frame[i++]; // should be TXT_TYPE_PLAIN
     uint8_t channel_idx = cmd_frame[i++];
@@ -1264,7 +1274,9 @@ void MyMesh::handleCmdFrame(size_t len) {
     } else {
       writeErrFrame(ERR_CODE_NOT_FOUND); // unknown contact
     }
-  } else if (cmd_frame[0] == CMD_ADD_UPDATE_CONTACT && len >= 1 + 32 + 2 + 1) {
+  } else if (cmd_frame[0] == CMD_ADD_UPDATE_CONTACT && len >= 1 + PUB_KEY_SIZE + 1 + 1 + 1 + MAX_PATH_SIZE + 32 + 4) {
+    // require the full mandatory contact layout (136 bytes); a shorter frame would otherwise leave a
+    // new ContactInfo partially uninitialised after updateContactFromFrame() bails on truncation
     uint8_t *pub_key = &cmd_frame[1];
     ContactInfo *recipient = lookupContactByPubKey(pub_key, PUB_KEY_SIZE);
     uint32_t last_mod = getRTCClock()->getCurrentTime();  // fallback value if not present in cmd_frame
@@ -1338,7 +1350,7 @@ void MyMesh::handleCmdFrame(size_t len) {
       uint8_t *pub_key = &cmd_frame[1];
       ContactInfo *recipient = lookupContactByPubKey(pub_key, PUB_KEY_SIZE);
       uint8_t out_len;
-      if (recipient && (out_len = exportContact(*recipient, &out_frame[1])) > 0) {
+      if (recipient && (out_len = exportContact(*recipient, &out_frame[1], sizeof(out_frame) - 1)) > 0) {
         out_frame[0] = RESP_CODE_EXPORT_CONTACT;
         _serial->writeFrame(out_frame, out_len + 1);
       } else {
